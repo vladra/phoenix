@@ -3,6 +3,7 @@
  */
 
 @import Carbon;
+@import Cocoa;
 
 #import "PHKeyHandler.h"
 #import "PHKeyTranslator.h"
@@ -14,6 +15,7 @@
 @property UInt32 modifierFlags;
 @property EventHotKeyRef reference;
 @property BOOL enabled;
+@property NSTimer *timer;
 
 @property (copy) NSString *key;
 @property (copy) NSArray<NSString *> *modifiers;
@@ -27,6 +29,7 @@ static FourCharCode const PHKeyHandlerSignature = 'FNIX';
 
 static NSString * const PHKeyHandlerIdentifierKey = @"PHKeyHandlerIdentifier";
 static NSString * const PHKeyHandlerKeyDownNotification = @"PHKeyHandlerKeyDownNotification";
+static NSString * const PHKeyHandlerKeyUpNotification = @"PHKeyHandlerKeyUpNotification";
 static NSString * const PHKeyHandlerWillEnableNotification = @"PHKeyHandlerWillEnableNotification";
 
 #pragma mark - CarbonEventCallback
@@ -49,7 +52,11 @@ static OSStatus PHCarbonEventCallback(__unused EventHandlerCallRef handler,
             return error;
         }
 
-        [[NSNotificationCenter defaultCenter] postNotificationName:PHKeyHandlerKeyDownNotification
+        NSString *notification = (GetEventKind(event) == kEventHotKeyPressed) ?
+                                 PHKeyHandlerKeyDownNotification :
+                                 PHKeyHandlerKeyUpNotification;
+
+        [[NSNotificationCenter defaultCenter] postNotificationName:notification
                                                             object:nil
                                                           userInfo:@{ PHKeyHandlerIdentifierKey: @(identifier.id) }];
         return noErr;
@@ -62,11 +69,15 @@ static OSStatus PHCarbonEventCallback(__unused EventHandlerCallRef handler,
 
     if (self == [PHKeyHandler self]) {
 
-        EventTypeSpec keyDown = { .eventClass = kEventClassKeyboard, .eventKind = kEventHotKeyPressed };
+        EventTypeSpec events[] = {
+            { .eventClass = kEventClassKeyboard, .eventKind = kEventHotKeyPressed },
+            { .eventClass = kEventClassKeyboard, .eventKind = kEventHotKeyReleased }
+        };
+
         OSStatus error = InstallEventHandler(GetEventDispatcherTarget(),
                                              PHCarbonEventCallback,
-                                             1,
-                                             &keyDown,
+                                             2,
+                                             events,
                                              NULL,
                                              NULL);
         if (error != noErr) {
@@ -102,6 +113,11 @@ static OSStatus PHCarbonEventCallback(__unused EventHandlerCallRef handler,
                                                  selector:@selector(keyDown:)
                                                      name:PHKeyHandlerKeyDownNotification
                                                    object:nil];
+        // Observe key up event
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(keyUp:)
+                                                     name:PHKeyHandlerKeyUpNotification
+                                                   object:nil];
         [self enable];
     }
 
@@ -114,6 +130,7 @@ static OSStatus PHCarbonEventCallback(__unused EventHandlerCallRef handler,
 
     [[NSNotificationCenter defaultCenter] removeObserver:self name:PHKeyHandlerWillEnableNotification object:nil];
     [[NSNotificationCenter defaultCenter] removeObserver:self name:PHKeyHandlerKeyDownNotification object:nil];
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:PHKeyHandlerKeyUpNotification object:nil];
     [self disable];
 }
 
@@ -182,6 +199,13 @@ static OSStatus PHCarbonEventCallback(__unused EventHandlerCallRef handler,
     return YES;
 }
 
+#pragma mark - Calling
+
+- (void) call {
+
+    [self callWithArguments:@[ self ]];
+}
+
 #pragma mark - Notification Handling
 
 - (void) willEnable:(NSNotification *)notification {
@@ -196,7 +220,58 @@ static OSStatus PHCarbonEventCallback(__unused EventHandlerCallRef handler,
 
     // This handler should handle this notification
     if (self.identifier == [notification.userInfo[PHKeyHandlerIdentifierKey] unsignedIntegerValue]) {
-        [self callWithArguments:@[ self ]];
+
+        [self call];
+
+        // Delay repeat timer
+        self.timer = [NSTimer scheduledTimerWithTimeInterval:[NSEvent keyRepeatDelay]
+                                                      target:self
+                                                    selector:@selector(delayTimerDidFire:)
+                                                    userInfo:nil
+                                                     repeats:NO];
+    }
+}
+
+- (void) keyUp:(NSNotification *)notification {
+
+    // This handler should handle this notification
+    if (self.identifier == [notification.userInfo[PHKeyHandlerIdentifierKey] unsignedIntegerValue]) {
+        [self.timer invalidate];
+    }
+}
+
+#pragma mark - Timing
+
+- (BOOL) validateTimer:(NSTimer *)timer {
+
+    // Not enabled
+    if (![self isEnabled]) {
+        [timer invalidate];
+        return NO;
+    }
+
+    return YES;
+}
+
+- (void) delayTimerDidFire:(NSTimer *)timer {
+
+    if ([self validateTimer:timer]) {
+
+        [self call];
+
+        // Repeat until key up
+        self.timer = [NSTimer scheduledTimerWithTimeInterval:[NSEvent keyRepeatInterval]
+                                                      target:self
+                                                    selector:@selector(repeatTimerDidFire:)
+                                                    userInfo:nil
+                                                     repeats:YES];
+    }
+}
+
+- (void) repeatTimerDidFire:(NSTimer *)timer {
+
+    if ([self validateTimer:timer]) {
+        [self call];
     }
 }
 

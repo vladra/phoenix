@@ -6,6 +6,10 @@ Changelog
 
 Release: dd.mm.yyyy
 
+### Improvements
+
+- Callback for key is now called repeatedly when key is held down ([#119](https://github.com/kasper/phoenix/issues/119)).
+
 2.2.1
 -----
 
